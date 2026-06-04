@@ -1,0 +1,17 @@
+# Root
+node_modules/
+.DS_Store
+*.log
+.env
+.env.local
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Backend
+apps/backend/dist/
+
+# TypeScript
+*.tsbuildinfo
