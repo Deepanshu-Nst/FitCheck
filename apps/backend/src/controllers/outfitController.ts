@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { supabase } from '../config/supabase';
+import { outfitsDb, feedbackDb } from '../services/dbService';
 import { storageService } from '../services/storageService';
 import { createError } from '../middleware/errorHandler';
 
@@ -10,6 +10,7 @@ const uploadMetaSchema = z.object({
 });
 
 // ── POST /outfits/upload ──────────────────────────────────────────────────────
+
 export async function uploadOutfit(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = uploadMetaSchema.safeParse(req.body);
@@ -26,27 +27,24 @@ export async function uploadOutfit(req: Request, res: Response, next: NextFuncti
     const { occasion, notes } = parsed.data;
     const userId = req.user!.userId;
 
-    // Upload image to Supabase Storage
+    // Upload image (local or Supabase depending on USE_MOCK_SERVICES)
     const imageUrl = await storageService.uploadOutfitImage(
       req.file.buffer,
       req.file.mimetype,
       userId
     );
 
-    // Save outfit metadata to DB
-    const { data: outfit, error } = await supabase
-      .from('outfits')
-      .insert({
-        user_id: userId,
-        image_url: imageUrl,
-        occasion,
-        notes,
-        status: 'pending',
-      })
-      .select('id, user_id, image_url, occasion, notes, status, created_at')
-      .single();
-
-    if (error) throw createError(error.message, 500);
+    const outfit = await outfitsDb.create({
+      user_id: userId,
+      image_url: imageUrl,
+      occasion,
+      notes: notes ?? null,
+      status: 'pending',
+      flagged: false,
+      admin_notes: null,
+      reviewed_by: null,
+      reviewed_at: null,
+    });
 
     res.status(201).json({
       success: true,
@@ -59,34 +57,42 @@ export async function uploadOutfit(req: Request, res: Response, next: NextFuncti
 }
 
 // ── GET /outfits/history ──────────────────────────────────────────────────────
+
 export async function getHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const offset = (page - 1) * limit;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit as string) || 10);
+    const userId = req.user!.userId;
 
-    const { data: outfits, error, count } = await supabase
-      .from('outfits')
-      .select(`
-        id, image_url, occasion, notes, status, created_at,
-        feedback (id, overall_score, confidence_level)
-      `, { count: 'exact' })
-      .eq('user_id', req.user!.userId)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const { items: outfits, total } = await outfitsDb.findByUserId(userId, page, limit);
 
-    if (error) throw createError(error.message, 500);
+    // Attach feedback summary for each outfit
+    const outfitsWithFeedback = await Promise.all(
+      outfits.map(async (outfit) => {
+        const feedback = await feedbackDb.findByOutfitId(outfit.id);
+        return {
+          ...outfit,
+          feedback: feedback
+            ? {
+                id: feedback.id,
+                overall_score: feedback.overall_score,
+                confidence_level: feedback.confidence_level,
+              }
+            : null,
+        };
+      })
+    );
 
     res.json({
       success: true,
       data: {
-        outfits,
+        outfits: outfitsWithFeedback,
         pagination: {
           page,
           limit,
-          total: count || 0,
-          totalPages: Math.ceil((count || 0) / limit),
-          hasMore: offset + limit < (count || 0),
+          total,
+          totalPages: Math.ceil(total / limit),
+          hasMore: page * limit < total,
         },
       },
     });
@@ -96,24 +102,22 @@ export async function getHistory(req: Request, res: Response, next: NextFunction
 }
 
 // ── GET /outfits/:id ──────────────────────────────────────────────────────────
+
 export async function getOutfit(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { data: outfit, error } = await supabase
-      .from('outfits')
-      .select(`
-        id, image_url, occasion, notes, status, created_at,
-        feedback (*)
-      `)
-      .eq('id', req.params.id)
-      .eq('user_id', req.user!.userId)
-      .single();
+    const outfit = await outfitsDb.findById(req.params.id as string);
 
-    if (error || !outfit) {
+    if (!outfit || outfit.user_id !== req.user!.userId) {
       next(createError('Outfit not found', 404));
       return;
     }
 
-    res.json({ success: true, data: { outfit } });
+    const feedback = await feedbackDb.findByOutfitId(outfit.id);
+
+    res.json({
+      success: true,
+      data: { outfit: { ...outfit, feedback: feedback ?? null } },
+    });
   } catch (err) {
     next(err);
   }

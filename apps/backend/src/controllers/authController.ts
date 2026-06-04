@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { supabase } from '../config/supabase';
+import { usersDb } from '../services/dbService';
 import { signToken } from '../utils/jwt';
 import { createError } from '../middleware/errorHandler';
 
 // ── Validation Schemas ────────────────────────────────────────────────────────
+
 const signupSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
@@ -25,6 +26,7 @@ const googleSchema = z.object({
 });
 
 // ── POST /auth/signup ─────────────────────────────────────────────────────────
+
 export async function signup(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = signupSchema.safeParse(req.body);
@@ -35,36 +37,38 @@ export async function signup(req: Request, res: Response, next: NextFunction): P
 
     const { name, email, password } = parsed.data;
 
-    // Check if user already exists
-    const { data: existing } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
-      .single();
-
+    // Check if email already registered
+    const existing = await usersDb.findByEmail(email);
     if (existing) {
       res.status(409).json({ success: false, message: 'Email already registered' });
       return;
     }
 
-    // Hash password
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Create user in DB
-    const { data: user, error } = await supabase
-      .from('users')
-      .insert({ name, email, password_hash: passwordHash, role: 'user' })
-      .select('id, name, email, role, avatar_url, created_at')
-      .single();
-
-    if (error) throw createError(error.message, 500);
+    const user = await usersDb.create({
+      name,
+      email,
+      password_hash: passwordHash,
+      role: 'user',
+      username: null,
+      avatar_url: null,
+      gender: null,
+      preferred_styles: [],
+      favorite_colors: [],
+      occasion_preferences: [],
+      bio: null,
+    });
 
     const token = signToken({ userId: user.id, email: user.email, role: user.role });
+
+    // Never return password_hash
+    const { password_hash: _, ...safeUser } = user;
 
     res.status(201).json({
       success: true,
       message: 'Account created successfully',
-      data: { user, token },
+      data: { user: safeUser, token },
     });
   } catch (err) {
     next(err);
@@ -72,6 +76,7 @@ export async function signup(req: Request, res: Response, next: NextFunction): P
 }
 
 // ── POST /auth/login ──────────────────────────────────────────────────────────
+
 export async function login(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = loginSchema.safeParse(req.body);
@@ -82,13 +87,8 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 
     const { email, password } = parsed.data;
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, name, email, password_hash, role, avatar_url, created_at')
-      .eq('email', email)
-      .single();
-
-    if (error || !user) {
+    const user = await usersDb.findByEmail(email);
+    if (!user || !user.password_hash) {
       res.status(401).json({ success: false, message: 'Invalid email or password' });
       return;
     }
@@ -101,7 +101,6 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 
     const token = signToken({ userId: user.id, email: user.email, role: user.role });
 
-    // Return user without sensitive fields
     const { password_hash: _, ...safeUser } = user;
 
     res.json({
@@ -115,7 +114,7 @@ export async function login(req: Request, res: Response, next: NextFunction): Pr
 }
 
 // ── POST /auth/google ─────────────────────────────────────────────────────────
-// Receives the decoded Google token data from the mobile app (via expo-auth-session)
+
 export async function googleAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = googleSchema.safeParse(req.body);
@@ -124,8 +123,8 @@ export async function googleAuth(req: Request, res: Response, next: NextFunction
       return;
     }
 
-    // TODO: Verify googleToken with Google's tokeninfo endpoint for production
-    // For now, trust the decoded user data from the mobile app (expo-auth-session)
+    // In production: verify googleToken with Google tokeninfo endpoint
+    // Here we trust the decoded user data from expo-auth-session (good enough for dev)
     const { name, email, avatar } = parsed.data;
 
     if (!email) {
@@ -133,24 +132,28 @@ export async function googleAuth(req: Request, res: Response, next: NextFunction
       return;
     }
 
-    // Upsert user (create if doesn't exist, else return existing)
-    const { data: user, error } = await supabase
-      .from('users')
-      .upsert(
-        { name: name || email.split('@')[0], email, avatar_url: avatar, role: 'user' },
-        { onConflict: 'email', ignoreDuplicates: false }
-      )
-      .select('id, name, email, role, avatar_url, created_at')
-      .single();
-
-    if (error) throw createError(error.message, 500);
+    const user = await usersDb.upsertByEmail({
+      name: name || email.split('@')[0],
+      email,
+      avatar_url: avatar || null,
+      password_hash: null,
+      role: 'user',
+      username: null,
+      gender: null,
+      preferred_styles: [],
+      favorite_colors: [],
+      occasion_preferences: [],
+      bio: null,
+    });
 
     const token = signToken({ userId: user.id, email: user.email, role: user.role });
+
+    const { password_hash: _, ...safeUser } = user;
 
     res.json({
       success: true,
       message: 'Google authentication successful',
-      data: { user, token },
+      data: { user: safeUser, token },
     });
   } catch (err) {
     next(err);

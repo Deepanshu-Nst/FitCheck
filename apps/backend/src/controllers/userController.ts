@@ -1,11 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { supabase } from '../config/supabase';
+import { usersDb } from '../services/dbService';
 import { createError } from '../middleware/errorHandler';
 
 const updateProfileSchema = z.object({
   name: z.string().min(2).optional(),
-  username: z.string().min(3).regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores').optional(),
+  username: z
+    .string()
+    .min(3)
+    .regex(/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores')
+    .optional(),
   gender: z.enum(['male', 'female', 'non-binary', 'prefer-not-to-say']).optional(),
   preferred_styles: z.array(z.string()).optional(),
   favorite_colors: z.array(z.string()).optional(),
@@ -14,26 +18,25 @@ const updateProfileSchema = z.object({
 });
 
 // ── GET /users/profile ────────────────────────────────────────────────────────
+
 export async function getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('id, name, username, email, avatar_url, gender, preferred_styles, favorite_colors, occasion_preferences, bio, role, created_at')
-      .eq('id', req.user!.userId)
-      .single();
+    const user = await usersDb.findById(req.user!.userId);
 
-    if (error || !user) {
+    if (!user) {
       next(createError('User not found', 404));
       return;
     }
 
-    res.json({ success: true, data: { user } });
+    const { password_hash: _, ...safeUser } = user;
+    res.json({ success: true, data: { user: safeUser } });
   } catch (err) {
     next(err);
   }
 }
 
 // ── PUT /users/profile ────────────────────────────────────────────────────────
+
 export async function updateProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const parsed = updateProfileSchema.safeParse(req.body);
@@ -42,31 +45,24 @@ export async function updateProfile(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    // Check username uniqueness if being updated
+    // Check username uniqueness
     if (parsed.data.username) {
-      const { data: existing } = await supabase
-        .from('users')
-        .select('id')
-        .eq('username', parsed.data.username)
-        .neq('id', req.user!.userId)
-        .single();
-
-      if (existing) {
+      const existing = await usersDb.findByUsername(parsed.data.username);
+      if (existing && existing.id !== req.user!.userId) {
         res.status(409).json({ success: false, message: 'Username already taken' });
         return;
       }
     }
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .update({ ...parsed.data, updated_at: new Date().toISOString() })
-      .eq('id', req.user!.userId)
-      .select('id, name, username, email, avatar_url, gender, preferred_styles, favorite_colors, occasion_preferences, bio, role, created_at')
-      .single();
+    const user = await usersDb.update(req.user!.userId, parsed.data);
 
-    if (error) throw createError(error.message, 500);
+    if (!user) {
+      next(createError('User not found', 404));
+      return;
+    }
 
-    res.json({ success: true, message: 'Profile updated', data: { user } });
+    const { password_hash: _, ...safeUser } = user;
+    res.json({ success: true, message: 'Profile updated', data: { user: safeUser } });
   } catch (err) {
     next(err);
   }
