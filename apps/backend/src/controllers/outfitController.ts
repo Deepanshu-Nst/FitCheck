@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { outfitsDb, feedbackDb } from '../services/dbService';
-import { storageService } from '../services/storageService';
+import { eq, desc, count, and } from 'drizzle-orm';
+import { db } from '../db/connection';
+import { outfits, feedback } from '../db/schema';
+import { imageService } from '../services/imageService';
 import { createError } from '../middleware/errorHandler';
 
 const uploadMetaSchema = z.object({
@@ -27,24 +29,23 @@ export async function uploadOutfit(req: Request, res: Response, next: NextFuncti
     const { occasion, notes } = parsed.data;
     const userId = req.user!.userId;
 
-    // Upload image (local or Supabase depending on USE_MOCK_SERVICES)
-    const imageUrl = await storageService.uploadOutfitImage(
+    // Upload to Cloudinary
+    const { url: imageUrl, publicId: imagePublicId } = await imageService.upload(
       req.file.buffer,
-      req.file.mimetype,
-      userId
+      req.file.mimetype
     );
 
-    const outfit = await outfitsDb.create({
-      user_id: userId,
-      image_url: imageUrl,
-      occasion,
-      notes: notes ?? null,
-      status: 'pending',
-      flagged: false,
-      admin_notes: null,
-      reviewed_by: null,
-      reviewed_at: null,
-    });
+    const [outfit] = await db
+      .insert(outfits)
+      .values({
+        userId,
+        imageUrl,
+        imagePublicId,
+        occasion,
+        notes: notes ?? null,
+        status: 'pending',
+      })
+      .returning();
 
     res.status(201).json({
       success: true,
@@ -63,23 +64,33 @@ export async function getHistory(req: Request, res: Response, next: NextFunction
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.min(50, parseInt(req.query.limit as string) || 10);
     const userId = req.user!.userId;
+    const offset = (page - 1) * limit;
 
-    const { items: outfits, total } = await outfitsDb.findByUserId(userId, page, limit);
+    const [totalResult, items] = await Promise.all([
+      db.select({ value: count() }).from(outfits).where(eq(outfits.userId, userId)),
+      db
+        .select()
+        .from(outfits)
+        .where(eq(outfits.userId, userId))
+        .orderBy(desc(outfits.createdAt))
+        .limit(limit)
+        .offset(offset),
+    ]);
+
+    const total = Number(totalResult[0]?.value ?? 0);
 
     // Attach feedback summary for each outfit
     const outfitsWithFeedback = await Promise.all(
-      outfits.map(async (outfit) => {
-        const feedback = await feedbackDb.findByOutfitId(outfit.id);
-        return {
-          ...outfit,
-          feedback: feedback
-            ? {
-                id: feedback.id,
-                overall_score: feedback.overall_score,
-                confidence_level: feedback.confidence_level,
-              }
-            : null,
-        };
+      items.map(async (outfit) => {
+        const [fb] = await db
+          .select({
+            id: feedback.id,
+            overallScore: feedback.overallScore,
+            confidenceLevel: feedback.confidenceLevel,
+          })
+          .from(feedback)
+          .where(eq(feedback.outfitId, outfit.id));
+        return { ...outfit, feedback: fb ?? null };
       })
     );
 
@@ -105,18 +116,24 @@ export async function getHistory(req: Request, res: Response, next: NextFunction
 
 export async function getOutfit(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const outfit = await outfitsDb.findById(req.params.id as string);
+    const [outfit] = await db
+      .select()
+      .from(outfits)
+      .where(eq(outfits.id, req.params.id as string));
 
-    if (!outfit || outfit.user_id !== req.user!.userId) {
+    if (!outfit || outfit.userId !== req.user!.userId) {
       next(createError('Outfit not found', 404));
       return;
     }
 
-    const feedback = await feedbackDb.findByOutfitId(outfit.id);
+    const [fb] = await db
+      .select()
+      .from(feedback)
+      .where(eq(feedback.outfitId, outfit.id));
 
     res.json({
       success: true,
-      data: { outfit: { ...outfit, feedback: feedback ?? null } },
+      data: { outfit: { ...outfit, feedback: fb ?? null } },
     });
   } catch (err) {
     next(err);

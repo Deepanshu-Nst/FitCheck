@@ -10,14 +10,16 @@ A consumer-grade React Native mobile application where users upload outfit photo
 
 | Layer | Technology |
 |-------|-----------|
-| Mobile | React Native (Expo SDK 56), TypeScript, Expo Router |
+| Mobile | React Native (Expo SDK 54), TypeScript, Expo Router |
 | Styling | NativeWind v4, Custom Design Tokens |
 | State | Zustand, TanStack Query |
 | Forms | React Hook Form + Zod |
 | Backend | Node.js, Express, TypeScript |
-| Database | Supabase (PostgreSQL + Storage) |
-| AI | Groq (llama-3.2-11b-vision-preview) |
-| Auth | JWT + Expo SecureStore |
+| Database | **Neon PostgreSQL** |
+| ORM | **Drizzle ORM** |
+| Storage | **Cloudinary** |
+| AI | Groq (llama-4-scout-17b) |
+| Auth | Email/Password + JWT + bcrypt + Expo SecureStore |
 
 ---
 
@@ -28,10 +30,11 @@ FitCheck/
 ├── apps/
 │   ├── mobile/          # React Native (Expo) app
 │   │   ├── app/         # Expo Router screens
-│   │   │   ├── (auth)/  # Login, Signup
+│   │   │   ├── (auth)/  # Login, Signup, Onboarding
 │   │   │   ├── (tabs)/  # Home, Upload, History, Profile
 │   │   │   ├── feedback/[outfitId].tsx
-│   │   │   └── outfit/[id].tsx
+│   │   │   ├── upload/  # Preview, Occasion
+│   │   │   └── profile/ # Edit, Settings
 │   │   └── src/
 │   │       ├── components/
 │   │       ├── constants/
@@ -40,12 +43,12 @@ FitCheck/
 │   │       └── store/
 │   └── backend/         # Express API server
 │       └── src/
+│           ├── db/              # Drizzle schema, migrations, connection
 │           ├── controllers/
 │           ├── middleware/
 │           ├── routes/
-│           ├── services/
-│           ├── utils/
-│           └── database/
+│           ├── services/        # imageService (Cloudinary), groqService
+│           └── utils/
 └── packages/
     └── shared/          # Shared Zod schemas + TypeScript types
 ```
@@ -58,22 +61,23 @@ FitCheck/
 - Node.js 18+
 - npm 9+
 - Expo CLI (`npm install -g expo-cli`)
-- A Supabase project (free tier works)
+- A [Neon](https://neon.tech) PostgreSQL project (free tier)
+- A [Cloudinary](https://cloudinary.com) account (free tier)
 - A Groq API key (free at [console.groq.com](https://console.groq.com))
 
 ---
 
-### 1. Database Setup
+### 1. Database Setup (Neon)
 
-Go to your [Supabase SQL Editor](https://app.supabase.com/project/_/sql) and run:
+1. Create a project at [neon.tech](https://neon.tech)
+2. Copy your **Connection String** from the dashboard
+3. Add it to `apps/backend/.env` as `DATABASE_URL`
+4. Run schema push:
 
+```bash
+cd apps/backend
+npm run db:push
 ```
-apps/backend/src/database/schema.sql
-```
-
-Also create a **Storage Bucket**:
-- Name: `outfit-images`
-- Public: **Yes**
 
 ---
 
@@ -84,6 +88,7 @@ cd apps/backend
 
 # Copy env file and fill in your values
 cp .env.example .env
+# Edit .env: add DATABASE_URL, CLOUDINARY_*, GROQ_API_KEY
 
 # Install dependencies
 npm install
@@ -101,22 +106,21 @@ The API runs at `http://localhost:3000`.
 ```bash
 cd apps/mobile
 
-# Copy env file and fill in your values
-cp .env.example .env
-
 # Start Expo
 npm start
 ```
 
-> **Note:** For physical device testing, set `EXPO_PUBLIC_API_URL` to your machine's local IP (e.g., `http://192.168.1.100:3000`).
+> **Note:** For physical device testing, set `EXPO_PUBLIC_API_URL` in a `.env` file to your machine's local IP (e.g., `http://192.168.1.100:3000`).
 
 ---
 
-## Running Without API Keys
+## Running Without All Keys
 
-The app runs in **mock mode** when keys are missing:
-- **No Groq key** → AI feedback uses realistic pre-built responses
-- **No Supabase** → Backend will log warnings but start; DB calls will fail gracefully
+| Missing | Behavior |
+|---------|---------|
+| `GROQ_API_KEY` | AI feedback uses realistic mock responses |
+| `CLOUDINARY_*` | Image uploads will fail at the upload step |
+| `DATABASE_URL` | Server will crash on start — Neon is required |
 
 ---
 
@@ -125,15 +129,15 @@ The app runs in **mock mode** when keys are missing:
 ### Upload → Feedback
 1. User picks/takes a photo → Expo Image Picker
 2. Image compressed to 1200px JPEG → Expo Image Manipulator
-3. Multipart upload to backend → Multer → Supabase Storage
-4. Outfit metadata saved to PostgreSQL
-5. Groq vision model analyzes the image
-6. Structured feedback JSON parsed and stored
+3. Multipart upload → Multer (memory buffer) → **Cloudinary**
+4. Outfit row saved to **Neon PostgreSQL** via Drizzle
+5. Groq vision model analyzes the image URL
+6. Structured feedback JSON stored in `feedback` table
 7. User redirected to Feedback screen
 
 ### Auth Flow
-1. Email signup/login → JWT issued → stored in Expo SecureStore
-2. App launch → token hydrated → profile fetched → auto-login
+1. Email signup → bcrypt hash → Drizzle INSERT → JWT issued → stored in Expo SecureStore
+2. App launch → token hydrated → `GET /users/profile` → auto-login
 3. Protected routes redirect unauthenticated users to `/auth/login`
 
 ---
@@ -144,12 +148,11 @@ The app runs in **mock mode** when keys are missing:
 |--------|----------|------|-------------|
 | POST | `/auth/signup` | ❌ | Email signup |
 | POST | `/auth/login` | ❌ | Email login |
-| POST | `/auth/google` | ❌ | Google OAuth |
 | GET | `/users/profile` | ✅ | Get profile |
 | PUT | `/users/profile` | ✅ | Update profile |
-| POST | `/outfits/upload` | ✅ | Upload outfit |
+| POST | `/outfits/upload` | ✅ | Upload outfit to Cloudinary |
 | GET | `/outfits/history` | ✅ | Paginated history |
-| GET | `/outfits/:id` | ✅ | Single outfit |
+| GET | `/outfits/:id` | ✅ | Single outfit + feedback |
 | POST | `/feedback/generate` | ✅ | Generate AI feedback |
 | GET | `/feedback/:outfitId` | ✅ | Get feedback |
 | GET | `/admin/submissions` | ✅ Admin | All submissions |
@@ -163,8 +166,10 @@ The app runs in **mock mode** when keys are missing:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `JWT_SECRET` | ✅ | Secret for signing JWTs |
-| `SUPABASE_URL` | ✅ | Your Supabase project URL |
-| `SUPABASE_SERVICE_KEY` | ✅ | Service role key (bypasses RLS) |
+| `DATABASE_URL` | ✅ | Neon PostgreSQL connection string |
+| `CLOUDINARY_CLOUD_NAME` | ✅ | Cloudinary cloud name |
+| `CLOUDINARY_API_KEY` | ✅ | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | ✅ | Cloudinary API secret |
 | `GROQ_API_KEY` | ⚠️ | Groq API key (mock mode if missing) |
 | `PORT` | ❌ | Server port (default: 3000) |
 
@@ -172,9 +177,18 @@ The app runs in **mock mode** when keys are missing:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `EXPO_PUBLIC_API_URL` | ✅ | Backend URL |
-| `EXPO_PUBLIC_SUPABASE_URL` | ⚠️ | For future direct client use |
-| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | ⚠️ | Anon key (safe to expose) |
-| `EXPO_PUBLIC_GOOGLE_CLIENT_ID_IOS` | ⚠️ | For Google Sign-In |
+
+---
+
+## Database Scripts
+
+```bash
+cd apps/backend
+
+npm run db:push      # Apply schema to Neon (development)
+npm run db:generate  # Generate migration SQL files
+npm run db:studio    # Open Drizzle Studio (visual DB browser)
+```
 
 ---
 

@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { outfitsDb, feedbackDb } from '../services/dbService';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/connection';
+import { outfits, feedback } from '../db/schema';
 import { groqService } from '../services/groqService';
 import { createError } from '../middleware/errorHandler';
 
@@ -14,15 +16,15 @@ export async function generateFeedback(req: Request, res: Response, next: NextFu
       return;
     }
 
-    const outfit = await outfitsDb.findById(outfitId);
+    const [outfit] = await db.select().from(outfits).where(eq(outfits.id, outfitId));
 
-    if (!outfit || outfit.user_id !== req.user!.userId) {
+    if (!outfit || outfit.userId !== req.user!.userId) {
       next(createError('Outfit not found', 404));
       return;
     }
 
     // Idempotency — don't generate twice
-    const existing = await feedbackDb.findByOutfitId(outfitId);
+    const [existing] = await db.select().from(feedback).where(eq(feedback.outfitId, outfitId));
     if (existing) {
       res.status(409).json({
         success: false,
@@ -33,41 +35,48 @@ export async function generateFeedback(req: Request, res: Response, next: NextFu
     }
 
     // Mark as processing
-    await outfitsDb.update(outfitId, { status: 'processing' });
+    await db.update(outfits).set({ status: 'processing' }).where(eq(outfits.id, outfitId));
 
     // Generate AI feedback (falls back to mock if no GROQ_API_KEY)
     const aiFeedback = await groqService.generateOutfitFeedback({
-      imageUrl: outfit.image_url,
+      imageUrl: outfit.imageUrl,
       occasion: outfit.occasion,
       notes: outfit.notes ?? undefined,
     });
 
     // Persist feedback
-    const feedback = await feedbackDb.create({
-      outfit_id: outfitId,
-      overall_score: aiFeedback.overallScore,
-      fit_feedback: aiFeedback.fitFeedback,
-      color_review: aiFeedback.colorReview,
-      occasion_match: aiFeedback.occasionMatch,
-      suggestions: aiFeedback.suggestions,
-      confidence_level: aiFeedback.confidenceLevel,
-      style_label: aiFeedback.styleLabel ?? null,
-      highlights: aiFeedback.highlights ?? [],
-      raw_ai_response: aiFeedback as unknown as Record<string, unknown>,
-    });
+    const [fb] = await db
+      .insert(feedback)
+      .values({
+        outfitId,
+        overallScore: aiFeedback.overallScore,
+        fitFeedback: aiFeedback.fitFeedback,
+        colorReview: aiFeedback.colorReview,
+        occasionMatch: aiFeedback.occasionMatch,
+        suggestions: aiFeedback.suggestions,
+        confidenceLevel: aiFeedback.confidenceLevel,
+        styleLabel: aiFeedback.styleLabel ?? null,
+        highlights: aiFeedback.highlights ?? [],
+        rawAiResponse: aiFeedback as unknown as Record<string, unknown>,
+      })
+      .returning();
 
     // Mark outfit as completed
-    await outfitsDb.update(outfitId, { status: 'completed' });
+    await db.update(outfits).set({ status: 'completed' }).where(eq(outfits.id, outfitId));
 
     res.status(201).json({
       success: true,
       message: 'Feedback generated successfully',
-      data: { feedback },
+      data: { feedback: fb },
     });
   } catch (err) {
     // Reset status on failure so user can retry
     if (req.body?.outfitId) {
-      await outfitsDb.update(req.body.outfitId, { status: 'failed' }).catch(() => null);
+      await db
+        .update(outfits)
+        .set({ status: 'failed' })
+        .where(eq(outfits.id, req.body.outfitId))
+        .catch(() => null);
     }
     next(err);
   }
@@ -77,20 +86,22 @@ export async function generateFeedback(req: Request, res: Response, next: NextFu
 
 export async function getFeedback(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const outfitId = req.params.outfitId as string;
+
     // Verify outfit ownership first
-    const outfit = await outfitsDb.findById(req.params.outfitId as string);
-    if (!outfit || outfit.user_id !== req.user!.userId) {
+    const [outfit] = await db.select().from(outfits).where(eq(outfits.id, outfitId));
+    if (!outfit || outfit.userId !== req.user!.userId) {
       next(createError('Outfit not found', 404));
       return;
     }
 
-    const feedback = await feedbackDb.findByOutfitId(req.params.outfitId as string);
-    if (!feedback) {
+    const [fb] = await db.select().from(feedback).where(eq(feedback.outfitId, outfitId));
+    if (!fb) {
       next(createError('Feedback not found — try generating it first', 404));
       return;
     }
 
-    res.json({ success: true, data: { feedback } });
+    res.json({ success: true, data: { feedback: fb } });
   } catch (err) {
     next(err);
   }

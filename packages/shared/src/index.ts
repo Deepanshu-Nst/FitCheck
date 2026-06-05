@@ -1,19 +1,21 @@
 import { z } from 'zod';
 
 // ── User ──────────────────────────────────────────────────────────────────────
+// Field names match Drizzle ORM camelCase output from the Neon DB.
 export const UserSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
   username: z.string().nullable(),
   email: z.string().email(),
-  avatar_url: z.string().url().nullable(),
+  avatarUrl: z.string().url().nullable(),
   gender: z.enum(['male', 'female', 'non-binary', 'prefer-not-to-say']).nullable(),
-  preferred_styles: z.array(z.string()),
-  favorite_colors: z.array(z.string()),
-  occasion_preferences: z.array(z.string()),
+  preferredStyles: z.array(z.string()),
+  favoriteColors: z.array(z.string()),
+  occasionPreferences: z.array(z.string()),
   bio: z.string().nullable(),
   role: z.enum(['user', 'admin']),
-  created_at: z.string(),
+  createdAt: z.string().or(z.date()),
+  updatedAt: z.string().or(z.date()),
 });
 
 export type User = z.infer<typeof UserSchema>;
@@ -71,29 +73,30 @@ export type OutfitStatus = z.infer<typeof OutfitStatusEnum>;
 
 export const OutfitSchema = z.object({
   id: z.string().uuid(),
-  user_id: z.string().uuid(),
-  image_url: z.string().url(),
+  userId: z.string().uuid(),
+  imageUrl: z.string().url(),
+  imagePublicId: z.string().nullable().optional(),
   occasion: OccasionEnum,
   notes: z.string().nullable(),
   status: OutfitStatusEnum,
-  flagged: z.boolean().optional(),
-  created_at: z.string(),
+  flagged: z.boolean().optional().nullable(),
+  createdAt: z.string().or(z.date()),
 });
 export type Outfit = z.infer<typeof OutfitSchema>;
 
 // ── Feedback ──────────────────────────────────────────────────────────────────
 export const FeedbackSchema = z.object({
   id: z.string().uuid(),
-  outfit_id: z.string().uuid(),
-  overall_score: z.number().int().min(0).max(100),
-  fit_feedback: z.string(),
-  color_review: z.string(),
-  occasion_match: z.string(),
+  outfitId: z.string().uuid(),
+  overallScore: z.number().int().min(0).max(100),
+  fitFeedback: z.string(),
+  colorReview: z.string(),
+  occasionMatch: z.string(),
   suggestions: z.array(z.string()),
-  confidence_level: z.enum(['low', 'medium', 'high']),
-  style_label: z.string().optional(),
+  confidenceLevel: z.enum(['low', 'medium', 'high']),
+  styleLabel: z.string().nullable().optional(),
   highlights: z.array(z.string()).optional(),
-  created_at: z.string(),
+  createdAt: z.string().or(z.date()),
 });
 export type Feedback = z.infer<typeof FeedbackSchema>;
 
@@ -116,7 +119,7 @@ export interface PaginatedResponse<T> {
   };
 }
 
-// ── Style Preferences ─────────────────────────────────────────────────────────
+// ── Style / Color Preferences ─────────────────────────────────────────────────
 export const STYLE_OPTIONS = [
   'Casual', 'Smart Casual', 'Streetwear', 'Minimalist',
   'Bohemian', 'Preppy', 'Sporty', 'Vintage', 'Business Formal',

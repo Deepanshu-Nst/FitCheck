@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { outfitsDb, usersDb, feedbackDb } from '../services/dbService';
+import { eq, desc, count } from 'drizzle-orm';
+import { db } from '../db/connection';
+import { outfits, users, feedback } from '../db/schema';
 import { createError } from '../middleware/errorHandler';
 
 // ── GET /admin/submissions ────────────────────────────────────────────────────
@@ -9,24 +11,39 @@ export async function getSubmissions(req: Request, res: Response, next: NextFunc
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.min(100, parseInt(req.query.limit as string) || 20);
     const statusFilter = req.query.status as string | undefined;
+    const offset = (page - 1) * limit;
 
-    const { items: outfits, total } = await outfitsDb.findAll(page, limit, statusFilter);
+    const baseQuery = statusFilter
+      ? db.select().from(outfits).where(eq(outfits.status, statusFilter))
+      : db.select().from(outfits);
 
-    // Enrich with user and feedback summary
+    const [countResult, items] = await Promise.all([
+      statusFilter
+        ? db.select({ value: count() }).from(outfits).where(eq(outfits.status, statusFilter))
+        : db.select({ value: count() }).from(outfits),
+      db
+        .select()
+        .from(outfits)
+        .orderBy(desc(outfits.createdAt))
+        .limit(limit)
+        .offset(offset),
+    ]);
+
+    const total = Number(countResult[0]?.value ?? 0);
+
     const submissions = await Promise.all(
-      outfits.map(async (outfit) => {
-        const [user, feedback] = await Promise.all([
-          usersDb.findById(outfit.user_id),
-          feedbackDb.findByOutfitId(outfit.id),
+      items.map(async (outfit) => {
+        const [user, fb] = await Promise.all([
+          db.select().from(users).where(eq(users.id, outfit.userId)).then((rows) => rows[0]),
+          db
+            .select({ id: feedback.id, overallScore: feedback.overallScore, confidenceLevel: feedback.confidenceLevel })
+            .from(feedback)
+            .where(eq(feedback.outfitId, outfit.id))
+            .then((rows) => rows[0]),
         ]);
-        const { password_hash: _, ...safeUser } = user ?? ({} as ReturnType<typeof usersDb.findById> extends Promise<infer T> ? NonNullable<T> : never);
-        return {
-          ...outfit,
-          user: safeUser,
-          feedback: feedback
-            ? { id: feedback.id, overall_score: feedback.overall_score, confidence_level: feedback.confidence_level }
-            : null,
-        };
+
+        const { passwordHash: _, ...safeUser } = user ?? ({} as any);
+        return { ...outfit, user: safeUser, feedback: fb ?? null };
       })
     );
 
@@ -34,12 +51,7 @@ export async function getSubmissions(req: Request, res: Response, next: NextFunc
       success: true,
       data: {
         submissions,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
       },
     });
   } catch (err) {
@@ -51,33 +63,31 @@ export async function getSubmissions(req: Request, res: Response, next: NextFunc
 
 export async function reviewSubmission(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { flagged, admin_notes, status } = req.body as {
+    const { flagged, adminNotes, status } = req.body as {
       flagged?: boolean;
-      admin_notes?: string;
+      adminNotes?: string;
       status?: string;
     };
 
-    const outfit = await outfitsDb.update(req.params.id as string, {
-      ...(flagged !== undefined && { flagged }),
-      ...(admin_notes && { admin_notes }),
-      ...(status && { status: status as MockOutfitStatus }),
-      reviewed_by: req.user!.userId,
-      reviewed_at: new Date().toISOString(),
-    });
+    const [outfit] = await db
+      .update(outfits)
+      .set({
+        ...(flagged !== undefined && { flagged }),
+        ...(adminNotes && { adminNotes }),
+        ...(status && { status }),
+        reviewedBy: req.user!.userId,
+        reviewedAt: new Date(),
+      })
+      .where(eq(outfits.id, req.params.id as string))
+      .returning();
 
     if (!outfit) {
       next(createError('Outfit not found', 404));
       return;
     }
 
-    res.json({
-      success: true,
-      message: 'Submission reviewed',
-      data: { outfit },
-    });
+    res.json({ success: true, message: 'Submission reviewed', data: { outfit } });
   } catch (err) {
     next(err);
   }
 }
-
-type MockOutfitStatus = 'pending' | 'processing' | 'completed' | 'failed';

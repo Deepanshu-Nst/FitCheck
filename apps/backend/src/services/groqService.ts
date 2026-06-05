@@ -67,23 +67,62 @@ class GroqService {
     const prompt = this.buildPrompt(input);
 
     try {
+      // If image is a local URL, we must fetch it and convert to base64
+      // since Groq's cloud servers cannot reach local IP addresses.
+      let finalImageUrl = input.imageUrl;
+      if (finalImageUrl.includes('localhost') || finalImageUrl.includes('10.') || finalImageUrl.includes('192.168.') || finalImageUrl.includes('127.0.0.1')) {
+        const response = await fetch(finalImageUrl);
+        if (!response.ok) throw new Error(`Failed to fetch local image: ${response.statusText}`);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const mimeType = response.headers.get('content-type') || 'image/jpeg';
+        finalImageUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+      }
+
       const completion = await this.client.chat.completions.create({
-        model: 'llama-3.2-11b-vision-preview',
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
         messages: [
           {
             role: 'system',
-            content: `You are FitCheck AI, a professional fashion stylist and outfit analyst. 
-You analyze outfit images and provide structured, actionable feedback.
-Always respond with ONLY valid JSON matching the exact schema provided.
-Be specific, constructive, and encouraging in your feedback.
-Consider the specified occasion when rating outfit appropriateness.`,
+            content: `
+You are FitCheck AI, a fashion intelligence engine for outfit review.
+
+Your job:
+- Analyze the outfit image carefully.
+- Evaluate style, fit, color harmony, occasion suitability, and overall presentation.
+- Give practical, specific, and constructive feedback.
+- Keep the tone professional, supportive, and confident.
+
+Critical rules:
+- Respond with ONLY valid JSON.
+- Do not include markdown, code fences, commentary, or extra text.
+- Do not mention uncertainty unless something is genuinely impossible to infer.
+- If the image is unclear, still return valid JSON with the best possible assessment.
+- Always consider the requested occasion when judging outfit suitability.
+- Prefer actionable style advice over generic praise.
+
+Output requirements:
+- Match the exact JSON schema provided by the application.
+- Every field must be present.
+- Use concise but informative language. Keep feedback to exactly 1 short punchy sentence per block.
+- Be visually and stylistically grounded, not overly dramatic.
+- Make the feedback feel like a premium fashion app, not a chatbot.
+
+Scoring Rubric (overallScore):
+- 90-100: Exceptional. Flawless execution, perfect fit, impeccable styling.
+- 80-89: Great. Looks highly put together with minor room for improvement.
+- 70-79: Average/Good. Everyday outfit, safe, but lacks wow-factor.
+- 60-69: Needs Work. Noticeable issues with fit, color clashing, or wrong occasion.
+- Below 60: Poor. A complete mismatch or major stylistic issues.
+Use the full spectrum of scores so that a 90+ feels genuinely earned!
+      `.trim(),
           },
           {
             role: 'user',
             content: [
               {
                 type: 'image_url',
-                image_url: { url: input.imageUrl },
+                image_url: { url: finalImageUrl },
               },
               {
                 type: 'text',
@@ -115,14 +154,14 @@ ${input.notes ? `User notes: "${input.notes}"` : ''}
 
 Return a JSON object with EXACTLY these fields:
 {
-  "overallScore": <integer 0-100>,
-  "fitFeedback": "<2-3 sentences about how well the clothes fit the body>",
-  "colorReview": "<2-3 sentences about color combinations and harmony>",
-  "occasionMatch": "<2-3 sentences about suitability for ${input.occasion}>",
-  "suggestions": ["<actionable tip 1>", "<actionable tip 2>", "<actionable tip 3>"],
+  "overallScore": <integer 0-100 based strictly on the rubric>,
+  "fitFeedback": "<1 short, punchy sentence about the fit>",
+  "colorReview": "<1 short, punchy sentence about color harmony>",
+  "occasionMatch": "<1 short, punchy sentence about suitability for ${input.occasion}>",
+  "suggestions": ["<short actionable tip 1>", "<short actionable tip 2>"],
   "confidenceLevel": "<'low' | 'medium' | 'high'>",
   "styleLabel": "<short style category e.g. 'Smart Casual', 'Streetwear', 'Business Formal'>",
-  "highlights": ["<positive point 1>", "<positive point 2>", "<positive point 3>"]
+  "highlights": ["<short positive point 1>", "<short positive point 2>"]
 }`;
   }
 
