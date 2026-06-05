@@ -108,13 +108,16 @@ Output requirements:
 - Be visually and stylistically grounded, not overly dramatic.
 - Make the feedback feel like a premium fashion app, not a chatbot.
 
-Scoring Rubric (overallScore):
-- 90-100: Exceptional. Flawless execution, perfect fit, impeccable styling.
-- 80-89: Great. Looks highly put together with minor room for improvement.
-- 70-79: Average/Good. Everyday outfit, safe, but lacks wow-factor.
-- 60-69: Needs Work. Noticeable issues with fit, color clashing, or wrong occasion.
-- Below 60: Poor. A complete mismatch or major stylistic issues.
-Use the full spectrum of scores so that a 90+ feels genuinely earned!
+Scoring Rules (overallScore):
+1. IF the image is NOT of a person or outfit (e.g. random objects, rooms, landscapes), SCORE IT BETWEEN 0-20. Be brutally honest.
+2. For actual outfits, START at 100 points, then deduct:
+   - Subtract 10-25 points for poor fit or bad proportions.
+   - Subtract 10-20 points for clashing or boring colors.
+   - Subtract 10-30 points if it does not match the requested occasion.
+   - Subtract 5-15 points if it lacks styling or effort.
+3. This means a standard, boring outfit should score in the 40s or 50s.
+4. Only truly exceptional outfits should score above 85.
+5. Never default to 70 or 60. Calculate the deductions mathematically!
       `.trim(),
           },
           {
