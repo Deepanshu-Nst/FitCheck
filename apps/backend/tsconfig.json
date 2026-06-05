@@ -14,10 +14,6 @@
     "declarationMap": true,
     "sourceMap": true,
     "moduleResolution": "node",
-    "baseUrl": ".",
-    "paths": {
-      "@shared/*": ["../../packages/shared/src/*"]
-    },
     "ignoreDeprecations": "5.0"
   },
   "include": ["src/**/*"],
